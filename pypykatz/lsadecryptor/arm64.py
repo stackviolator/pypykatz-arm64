@@ -26,9 +26,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import struct
 import traceback
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -107,7 +110,7 @@ def extract_lsa_keys(reader) -> tuple[bytes, bytes, bytes] | None:
     """
     data_va, data_size, _ = _find_module_data_section(reader, "lsasrv.dll")
     if data_va is None:
-        print("  arm64: lsasrv.dll .data section not found")
+        logger.info("arm64: lsasrv.dll .data section not found")
         return None
 
     # Scan .data for QWORD pairs where both point to RUUU structures.
@@ -151,12 +154,12 @@ def extract_lsa_keys(reader) -> tuple[bytes, bytes, bytes] | None:
                     aes_key = k
 
             if des_key and aes_key:
-                print(f"  arm64: extracted IV={iv.hex()}")
-                print(f"  arm64: extracted AES key ({len(aes_key)}B)")
-                print(f"  arm64: extracted 3DES key ({len(des_key)}B)")
+                logger.info("arm64: extracted IV=%s", iv.hex())
+                logger.info("arm64: extracted AES key (%dB)", len(aes_key))
+                logger.info("arm64: extracted 3DES key (%dB)", len(des_key))
                 return iv, aes_key, des_key
 
-    print(f"  arm64: found {len(candidates)} RUUU pointers but no adjacent pair with valid keys")
+    logger.info("arm64: found %d RUUU pointers but no adjacent pair with valid keys", len(candidates))
     return None
 
 
@@ -293,11 +296,10 @@ def find_logon_session_list(reader) -> int | None:
                 best_count = count
                 best_addr = addr
                 find_logon_session_list._best_real = is_real_user
-                print(f"  arm64: MSV list candidate @ 0x{addr:x} "
-                      f"({count} entries, first={domain}\\{username})")
+                logger.info("arm64: MSV list candidate @ 0x%x (%d entries, first=%s\\%s)", addr, count, domain, username)
 
     if best_addr:
-        print(f"  arm64: selected LogonSessionList @ 0x{best_addr:x} ({best_count} entries)")
+        logger.info("arm64: selected LogonSessionList @ 0x%x (%d entries)", best_addr, best_count)
     return best_addr
 
 
@@ -315,7 +317,7 @@ def find_wdigest_list(reader) -> int | None:
     """
     data_va, data_size, _ = _find_module_data_section(reader, "wdigest.dll")
     if data_va is None:
-        print("  arm64: wdigest.dll .data section not found")
+        logger.info("arm64: wdigest.dll .data section not found")
         return None
 
     best_addr = None
@@ -350,11 +352,10 @@ def find_wdigest_list(reader) -> int | None:
                 best_count = count
                 best_addr = addr
                 find_wdigest_list._best_real = is_real_user
-                print(f"  arm64: WDigest list candidate @ 0x{addr:x} "
-                      f"({count} entries, first={domain}\\{username})")
+                logger.info("arm64: WDigest list candidate @ 0x%x (%d entries, first=%s\\%s)", addr, count, domain, username)
 
     if best_addr:
-        print(f"  arm64: selected l_LogSessList @ 0x{best_addr:x} ({best_count} entries)")
+        logger.info("arm64: selected l_LogSessList @ 0x%x (%d entries)", best_addr, best_count)
     return best_addr
 
 
@@ -407,7 +408,7 @@ def parse_arm64_dump(dump_path: str) -> dict[str, Any] | None:
     from pypykatz.commons.common import KatzSystemArchitecture, KatzSystemInfo
     from pypykatz.pypykatz import pypykatz as katz
 
-    print("  arm64: attempting ARM64 LSASS parse")
+    logger.info("arm64: attempting ARM64 LSASS parse")
 
     minidump = MinidumpFile.parse(dump_path)
     reader = minidump.get_reader().get_buffered_reader(segment_chunk_size=10 * 1024)
@@ -417,14 +418,14 @@ def parse_arm64_dump(dump_path: str) -> dict[str, Any] | None:
     # Step 1: Extract crypto keys
     keys = extract_lsa_keys(reader)
     if keys is None:
-        print("  arm64: failed to extract LSA crypto keys")
+        logger.error("arm64: failed to extract LSA crypto keys")
         return None
     iv, aes_key, des_key = keys
 
     # Step 2: Find linked list addresses
     msv_addr = find_logon_session_list(reader)
     if msv_addr is None:
-        print("  arm64: failed to find LogonSessionList")
+        logger.error("arm64: failed to find LogonSessionList")
         return None
 
     wdigest_addr = find_wdigest_list(reader)
@@ -440,13 +441,13 @@ def parse_arm64_dump(dump_path: str) -> dict[str, Any] | None:
     try:
         mimi.get_logoncreds()
     except Exception as e:
-        print(f"  arm64: MSV parsing error: {e}")
+        logger.error("arm64: MSV parsing error: %s", e)
 
     if wdigest_addr:
         try:
             mimi.get_wdigest()
         except Exception as e:
-            print(f"  arm64: WDigest parsing error: {e}")
+            logger.error("arm64: WDigest parsing error: %s", e)
 
     # Step 4: Build pypykatz-compatible JSON dict
     result: dict[str, Any] = {"logon_sessions": {}}
@@ -475,7 +476,7 @@ def parse_arm64_dump(dump_path: str) -> dict[str, Any] | None:
         len(s["msv_creds"]) + len(s["wdigest_creds"])
         for s in result["logon_sessions"].values()
     )
-    print(f"  arm64: extracted {n_sessions} sessions, {n_creds} credential entries")
+    logger.info("arm64: extracted %d sessions, %d credential entries", n_sessions, n_creds)
     return result
 
 
@@ -541,12 +542,12 @@ def main():
         try:
             mimi.get_logoncreds()
         except Exception as e:
-            print(f"MSV error: {e}")
+            logger.error("MSV error: %s", e)
         if args.wdigest_list:
             try:
                 mimi.get_wdigest()
             except Exception as e:
-                print(f"WDigest error: {e}")
+                logger.error("WDigest error: %s", e)
 
         for luid, session in mimi.logon_sessions.items():
             if session.username and not session.username.endswith("$"):
